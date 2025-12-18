@@ -1,0 +1,22 @@
+--extra-index-url https://download.pytorch.org/whl/cu129
+
+torch==2.8.0 
+torchvision==0.23.0 
+torchaudio==2.8.0
+
+python-dotenv
+tqdm
+pyyaml
+pandas
+datasets
+
+sglang
+huggingface_hub
+sentence-transformers
+transformers
+accelerate
+wandb
+
+peft 
+bitsandbytes
+
