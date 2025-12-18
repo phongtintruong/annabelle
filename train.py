@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 from transformers import AutoTokenizer, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
 from tqdm import tqdm
 from datasets import load_dataset
 from huggingface_hub import HfApi, login
@@ -15,7 +15,7 @@ import wandb
 from custom_llm_model import QwenForNextMessagePrediction 
 
 # --- CONFIG ---
-MODEL_NAME = "Qwen/Qwen2-1.5B-Instruct"
+MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
 DATASET_PATH = "Ryuk00/annabelle" 
 TARGET_EMBEDDING_SIZE = 4096
 
@@ -30,7 +30,7 @@ MAX_SEQ_LENGTH = 4096
 OUTPUT_DIR = "./checkpoints"
 SAVE_STEPS = 1000
 WANDB_PROJECT = "qwen-embedding-finetune"
-HF_TOKEN = "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"
+HF_TOKEN = "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"
 WANDB_API_KEY = "2f94fd9e02c96c007db857ed53b48fd5e6cd8428"
 HF_REPO_ID = "Ryuk00/qwen-llm-finetuned-v4"
 PUSH_TO_HUB = True
@@ -56,19 +56,19 @@ class HardNegativeInfoNCELoss(nn.Module):
         self.cross_entropy = nn.CrossEntropyLoss()
 
     def forward(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        anchor_embeddings = anchor_embeddings.to(dtype=torch.float32)
-        positive_embeddings = positive_embeddings.to(dtype=torch.float32)
-        negative_embeddings = negative_embeddings.to(dtype=torch.float32)
+        anchor = anchor_embeddings.to(torch.float32)
+        pos = positive_embeddings.to(torch.float32)
+        neg = negative_embeddings.to(torch.float32)
 
-        batch_size = anchor_embeddings.size(0)
-        
-        anchor_norm = F.normalize(anchor_embeddings, p=2, dim=1)
-        pos_sim = (anchor_norm * positive_embeddings).sum(dim=1, keepdim=True)
-        neg_sim = torch.bmm(negative_embeddings, anchor_norm.unsqueeze(2)).squeeze(2)
-        
+        anchor = F.normalize(anchor, p=2, dim=1)
+        pos = F.normalize(pos, p=2, dim=1)
+        neg = F.normalize(neg, p=2, dim=2)
+
+        pos_sim = (anchor * pos).sum(dim=1, keepdim=True)                    # [B, 1]
+        neg_sim = torch.bmm(neg, anchor.unsqueeze(2)).squeeze(2)             # [B, N]
+
         logits = torch.cat([pos_sim, neg_sim], dim=1) * self.scale
-        labels = torch.zeros(batch_size, dtype=torch.long, device=logits.device)
-        
+        labels = torch.zeros(anchor.size(0), dtype=torch.long, device=logits.device)
         return self.cross_entropy(logits, labels)
 
 # --- DATASET ---
@@ -153,13 +153,18 @@ model_wrapper = QwenForNextMessagePrediction(
     attn_implementation="flash_attention_2" if USE_FLASH_ATTENTION else "eager"
 )
 
+model_wrapper.backbone = prepare_model_for_kbit_training(
+    model_wrapper.backbone,
+    use_gradient_checkpointing=True
+)
+
 lora_config = LoraConfig(
     r=8,
     lora_alpha=32,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     lora_dropout=0.05,
     bias="none",
-    task_type=None
+    task_type=TaskType.FEATURE_EXTRACTION
 )
 
 model_wrapper.backbone = get_peft_model(model_wrapper.backbone, lora_config)
@@ -177,6 +182,10 @@ print("="*50)
 
 # --- TRAINING ---
 dataset = ParquetDataset(DATASET_PATH)
+
+# preview the dataset
+print(dataset[0])
+
 dataloader = DataLoader(
     dataset,
     batch_size=BATCH_SIZE,
