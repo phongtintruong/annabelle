@@ -2,13 +2,15 @@ import torch
 from transformers import AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
 from huggingface_hub import hf_hub_download
-from custom_llm_model import QwenForNextMessagePrediction # Import class model của bạn
+from custom_llm_model import QwenForNextMessagePrediction 
+
+import config
 
 # --- CẤU HÌNH ---
-HF_REPO_ID = "Ryuk00/qwen-llm-finetuned-v4" # Tên repo bạn đã đẩy lên
-SUBFOLDER = "epoch-3"                            # Tên folder checkpoint bạn muốn load (vd: epoch-3, checkpoint-100)
-BASE_MODEL = "Qwen/Qwen2-1.5B-Instruct"          # Model gốc
-HF_TOKEN = "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" # Token (nếu repo là private)
+HF_REPO_ID = config.HF_REPO_ID 
+SUBFOLDER = config.SUBFOLDER                           
+MODEL_NAME = config.MODEL_NAME         
+HF_TOKEN = config.HF_TOKEN 
 
 def load_model_from_hub():
     print(f"Loading from {HF_REPO_ID} (Folder: {SUBFOLDER})...")
@@ -22,7 +24,7 @@ def load_model_from_hub():
 
     print("Initializing Base Model...")
     model = QwenForNextMessagePrediction(
-        model_name=BASE_MODEL,
+        model_name=MODEL_NAME,
         output_embedding_size=4096,
         # quantization_config=bnb_config 
     )

@@ -9,9 +9,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 
-config_path = "config.yaml"
-with open(config_path, "r") as f:
-    config = yaml.safe_load(f)
+import config
 
 class EmbeddingManager(ABC): 
     @abstractmethod
@@ -31,14 +29,14 @@ class Qwen3Embedding(EmbeddingManager):
     Manager for Qwen3 embedding model served by SGLang.
     """
     def __init__(self, base_url: str | None = None, model: str | None = None, timeout: float | None = None):
-        self.base_url = base_url or config["embedding"]["base_url"]
-        self.model = model or config["embedding"]["model"]
-        self.timeout = timeout or config["embedding"]["timeout"]
-        self.encoding_format = config["embedding"]["encoding_format"]
+        self.base_url = base_url or config.EMBEDDING_BASE_URL
+        self.model = model or config.EMBEDDING_MODEL
+        self.timeout = timeout or config.EMBEDDING_TIMEOUT
+        self.encoding_format = config.EMBEDDING_ENCODING_FORMAT
         
         self.client = OpenAI(
             base_url=self.base_url, 
-            api_key="abc", 
+            api_key=config.OPENAI_API_KEY, 
             timeout=self.timeout,
             max_retries=2 
         )

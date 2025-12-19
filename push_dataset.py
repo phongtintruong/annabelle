@@ -3,12 +3,14 @@ import pyarrow as pa
 import os
 from huggingface_hub import HfApi, create_repo
 
+import config
+
 # --- CẤU HÌNH ---
-INPUT_FILE = "/workspace/bell_llm/dataset/train_dataset.parquet"  
-REPO_ID = "Ryuk00/annabelle"   
-OUTPUT_DIR = "./sharded_data"               
-CHUNK_SIZE_MB = 2000                          
-HF_TOKEN = "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"
+INPUT_FILE = config.DATASET_INPUT_FILE
+REPO_ID = config.DATASET_REPO_ID
+OUTPUT_DIR = config.SHARDED_DATA_DIR
+CHUNK_SIZE_MB = config.CHUNK_SIZE_MB
+HF_TOKEN = config.HF_TOKEN
 # ----------------
 def shard_upload_and_delete():
     api = HfApi(token=HF_TOKEN)

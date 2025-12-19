@@ -1,3 +1,4 @@
+import gc
 import os
 import torch
 import torch.nn as nn
@@ -14,32 +15,35 @@ import wandb
 
 from custom_llm_model import QwenForNextMessagePrediction 
 
+import config
+
 # --- CONFIG ---
-MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
-DATASET_PATH = "Ryuk00/annabelle" 
-TARGET_EMBEDDING_SIZE = 4096
+MODEL_NAME = config.MODEL_NAME
+DATASET_PATH = config.DATASET_PATH
+TARGET_EMBEDDING_SIZE = config.TARGET_EMBEDDING_SIZE
 
-BATCH_SIZE = 1
-LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 0.01
-NUM_EPOCHS = 3
-MNRL_SCALE_FACTOR = 20.0
-WARMUP_RATIO = 0.05
-MAX_SEQ_LENGTH = 4096
+BATCH_SIZE = config.BATCH_SIZE
+LEARNING_RATE = config.LEARNING_RATE
+WEIGHT_DECAY = config.WEIGHT_DECAY
+NUM_EPOCHS = config.NUM_EPOCHS
+MNRL_SCALE_FACTOR = config.MNRL_SCALE_FACTOR
+WARMUP_RATIO = config.WARMUP_RATIO
+MAX_SEQ_LENGTH = config.MAX_SEQ_LENGTH
 
-OUTPUT_DIR = "./checkpoints"
-SAVE_STEPS = 1000
-WANDB_PROJECT = "qwen-embedding-finetune"
-HF_TOKEN = "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"
-WANDB_API_KEY = "2f94fd9e02c96c007db857ed53b48fd5e6cd8428"
-HF_REPO_ID = "Ryuk00/qwen-llm-finetuned-v4"
-PUSH_TO_HUB = True
+OUTPUT_DIR = config.OUTPUT_DIR
+SAVE_STEPS = config.SAVE_STEPS
+WANDB_PROJECT = config.WANDB_PROJECT
+HF_TOKEN = config.HF_TOKEN
+WANDB_API_KEY = config.WANDB_API_KEY
+HF_REPO_ID = config.HF_REPO_ID
+PUSH_TO_HUB = config.PUSH_TO_HUB
 
-GRADIENT_ACCUMULATION_STEPS = 16
-MAX_GRAD_NORM = 1.0
-USE_FLASH_ATTENTION = True
+GRADIENT_ACCUMULATION_STEPS = config.GRADIENT_ACCUMULATION_STEPS
+MAX_GRAD_NORM = config.MAX_GRAD_NORM
+USE_FLASH_ATTENTION = config.USE_FLASH_ATTENTION
 
 # --- SETUP ---
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 wandb.login(key=WANDB_API_KEY)
 login(token=HF_TOKEN)
 wandb.init(project=WANDB_PROJECT, name=f"run-{MODEL_NAME.split('/')[-1]}")
@@ -81,7 +85,7 @@ class ParquetDataset(Dataset):
             split="train",
             token=HF_TOKEN,
             verification_mode="no_checks",          
-        )
+        ).shuffle(seed=42)
         print(f"Loaded {len(self.dataset)} samples from HF Hub")
 
     def __len__(self):
@@ -103,8 +107,8 @@ def collate_fn(batch, tokenizer):
     
     tokens = tokenizer(
         histories,
-        padding=True,
-        truncation=True,
+        padding="max_length",
+        truncation=False,
         max_length=MAX_SEQ_LENGTH,
         return_tensors="pt"
     )
@@ -118,8 +122,10 @@ def save_checkpoint(model, tokenizer, output_dir, step_name, push=False):
     save_path = os.path.join(output_dir, step_name)
     os.makedirs(save_path, exist_ok=True)
     
-    model.backbone.save_pretrained(save_path)
+    model.qwen.save_pretrained(save_path)
+    
     torch.save(model.projection_head.state_dict(), os.path.join(save_path, "head.pt"))
+    
     tokenizer.save_pretrained(save_path)
     
     print(f"✓ Saved checkpoint to {save_path}")
@@ -131,6 +137,7 @@ def save_checkpoint(model, tokenizer, output_dir, step_name, push=False):
             print("✓ Push complete.")
         except Exception as e:
             print(f"✗ Failed: {e}")
+
 
 # --- MODEL SETUP ---
 bnb_config = BitsAndBytesConfig(
@@ -152,14 +159,14 @@ model_wrapper = QwenForNextMessagePrediction(
     quantization_config=bnb_config,
     attn_implementation="flash_attention_2" if USE_FLASH_ATTENTION else "eager"
 )
-
-model_wrapper.backbone = prepare_model_for_kbit_training(
-    model_wrapper.backbone,
+model_wrapper.projection_head.float()
+model_wrapper.qwen = prepare_model_for_kbit_training(
+    model_wrapper.qwen,
     use_gradient_checkpointing=True
 )
 
 lora_config = LoraConfig(
-    r=8,
+    r=16,
     lora_alpha=32,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     lora_dropout=0.05,
@@ -167,8 +174,9 @@ lora_config = LoraConfig(
     task_type=TaskType.FEATURE_EXTRACTION
 )
 
-model_wrapper.backbone = get_peft_model(model_wrapper.backbone, lora_config)
-device = model_wrapper.backbone.device 
+model_wrapper.qwen = get_peft_model(model_wrapper.qwen, lora_config)
+
+device = model_wrapper.qwen.device 
 model_wrapper.projection_head.to(device) 
 
 
@@ -177,9 +185,11 @@ for param in model_wrapper.projection_head.parameters():
     param.requires_grad = True
 
 print("\n" + "="*50)
-model_wrapper.backbone.print_trainable_parameters()
+model_wrapper.qwen.print_trainable_parameters()
 print("="*50)
 
+
+wandb.watch(model_wrapper, log="gradients", log_freq=100)
 # --- TRAINING ---
 dataset = ParquetDataset(DATASET_PATH)
 
@@ -211,7 +221,6 @@ scheduler = get_cosine_schedule_with_warmup(
     num_cycles=0.5,
     last_epoch=-1
 )
-
 loss_fn = HardNegativeInfoNCELoss(scale=MNRL_SCALE_FACTOR)
 
 print("\n" + "="*50)
@@ -223,6 +232,7 @@ print(f"Grad accumulation: {GRADIENT_ACCUMULATION_STEPS}")
 print(f"Effective batch: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
 print(f"Total steps: {total_steps}")
 print(f"Warmup: {warmup_steps} steps")
+print(f"Device: {device}")
 print("="*50 + "\n")
 
 print("--- Starting Training ---\n")
@@ -236,11 +246,10 @@ for epoch in range(NUM_EPOCHS):
     
     for batch_idx, batch in enumerate(progress_bar):
         tokens = batch['tokens']
-        input_ids = tokens['input_ids'].to(model_wrapper.backbone.device)
-        attention_mask = tokens['attention_mask'].to(model_wrapper.backbone.device)
-        
-        pos_embs = batch['positive_embeddings'].to(model_wrapper.backbone.device)
-        neg_embs = batch['negative_embeddings'].to(model_wrapper.backbone.device)
+        input_ids = tokens['input_ids'].to(device)
+        attention_mask = tokens['attention_mask'].to(device)
+        pos_embs = batch['positive_embeddings'].to(device)
+        neg_embs = batch['negative_embeddings'].to(device)
         
         anchor_embs = model_wrapper(input_ids=input_ids, attention_mask=attention_mask)
         loss = loss_fn(anchor_embs, pos_embs, neg_embs)
@@ -249,8 +258,11 @@ for epoch in range(NUM_EPOCHS):
         loss.backward()
         accumulation_counter += 1
         
+        current_loss_val = loss.item() * GRADIENT_ACCUMULATION_STEPS
+        epoch_loss += current_loss_val
+
         if accumulation_counter % GRADIENT_ACCUMULATION_STEPS == 0 or (batch_idx == len(dataloader) - 1):
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 filter(lambda p: p.requires_grad, model_wrapper.parameters()),
                 MAX_GRAD_NORM
             )
@@ -259,22 +271,29 @@ for epoch in range(NUM_EPOCHS):
             optimizer.zero_grad()
             global_step += 1
             
-            current_loss = loss.item() * GRADIENT_ACCUMULATION_STEPS
-            epoch_loss += current_loss
-            
             wandb.log({
-                "train_loss": current_loss,
+                "train_loss": current_loss_val,
                 "learning_rate": scheduler.get_last_lr()[0],
+                "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm, 
                 "step": global_step
             })
-            progress_bar.set_postfix({'loss': f'{current_loss:.4f}'})
-            
+            progress_bar.set_postfix({
+                'loss': f'{current_loss_val:.4f}',
+                'gnorm': f'{grad_norm:.2f}' 
+            })
             if global_step % SAVE_STEPS == 0:
                 save_checkpoint(model_wrapper, tokenizer, OUTPUT_DIR, f"checkpoint-{global_step}", push=PUSH_TO_HUB)
+                
+                torch.cuda.empty_cache() 
 
-    avg_loss = epoch_loss / (len(dataloader) // GRADIENT_ACCUMULATION_STEPS)
+        del input_ids, attention_mask, pos_embs, neg_embs, anchor_embs, loss
+        
+    avg_loss = epoch_loss / len(dataloader)
     print(f"\n✓ Epoch {epoch + 1} Avg Loss: {avg_loss:.4f}\n")
     save_checkpoint(model_wrapper, tokenizer, OUTPUT_DIR, f"epoch-{epoch+1}", push=PUSH_TO_HUB)
+    
+    gc.collect()
+    torch.cuda.empty_cache()
 
 print("\n" + "="*50)
 print("✓ Training Finished!")

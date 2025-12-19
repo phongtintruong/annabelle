@@ -12,6 +12,7 @@ from transformers import AutoTokenizer
 from datasets import load_dataset
 from qwen import Qwen3Embedding
 import json
+import config
 
 def setup_logging(log_file: str, level: int = logging.INFO):
     logger = logging.getLogger()
@@ -113,17 +114,17 @@ def encode_in_batches(embedding_model, texts, batch_size=32, max_workers=8):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-name", default="Qwen/Qwen3-Embedding-8B") 
-    parser.add_argument("--dataset-name", default="HTung/dialog_CC_clean_v2")
-    parser.add_argument("--output-dir", default="./dataset") 
-    parser.add_argument("--log-file", default="data.log")
-    parser.add_argument("--output-file", default="train_dataset.parquet")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding")
-    parser.add_argument("--max-workers", type=int, default=16, help="Number of threads for parallel requests")
-    parser.add_argument("--top-k", type=int, default=64) 
-    parser.add_argument("--similarity-threshold", type=float, default=0.65)
-    parser.add_argument("--max-seq-length", type=int, default=4096, help="Max tokens in history anchor")
-    parser.add_argument("--triplet-batch-size", type=int, default=5000, help="Batch size for writing triplets")
+    parser.add_argument("--model-name", default=config.EMBEDDING_MODEL) 
+    parser.add_argument("--dataset-name", default=config.SOURCE_DATASET_NAME)
+    parser.add_argument("--output-dir", default=config.DATASET_OUTPUT_DIR) 
+    parser.add_argument("--log-file", default=config.DATA_LOG_FILE)
+    parser.add_argument("--output-file", default=config.DATA_OUTPUT_FILE)
+    parser.add_argument("--batch-size", type=int, default=config.DATA_BATCH_SIZE, help="Batch size for encoding")
+    parser.add_argument("--max-workers", type=int, default=config.DATA_MAX_WORKERS, help="Number of threads for parallel requests")
+    parser.add_argument("--top-k", type=int, default=config.DATA_TOP_K) 
+    parser.add_argument("--similarity-threshold", type=float, default=config.DATA_SIMILARITY_THRESHOLD)
+    parser.add_argument("--max-seq-length", type=int, default=config.MAX_SEQ_LENGTH, help="Max tokens in history anchor")
+    parser.add_argument("--triplet-batch-size", type=int, default=config.TRIPLET_BATCH_SIZE, help="Batch size for writing triplets")
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
