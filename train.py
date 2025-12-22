@@ -180,7 +180,6 @@ device = model_wrapper.qwen.device
 model_wrapper.projection_head.to(device) 
 
 
-# ✅ PROJECTION HEAD TRAINABLE
 for param in model_wrapper.projection_head.parameters():
     param.requires_grad = True
 
@@ -193,7 +192,6 @@ wandb.watch(model_wrapper, log="gradients", log_freq=100)
 # --- TRAINING ---
 dataset = ParquetDataset(DATASET_PATH)
 
-# preview the dataset
 print(dataset[0])
 
 dataloader = DataLoader(
@@ -211,13 +209,15 @@ optimizer = AdamW(
     weight_decay=WEIGHT_DECAY
 )
 
-total_steps = len(dataloader) * NUM_EPOCHS
-warmup_steps = int(total_steps * WARMUP_RATIO)
+num_batches_per_epoch = len(dataloader)
+num_update_steps_per_epoch = (num_batches_per_epoch + GRADIENT_ACCUMULATION_STEPS - 1) // GRADIENT_ACCUMULATION_STEPS
+total_optimization_steps = num_update_steps_per_epoch * NUM_EPOCHS
+warmup_steps = int(total_optimization_steps * WARMUP_RATIO)
 
 scheduler = get_cosine_schedule_with_warmup(
     optimizer,
     num_warmup_steps=warmup_steps,
-    num_training_steps=total_steps,
+    num_training_steps=total_optimization_steps,
     num_cycles=0.5,
     last_epoch=-1
 )
@@ -228,20 +228,24 @@ print("TRAINING CONFIG")
 print("="*50)
 print(f"Samples: {len(dataset)}")
 print(f"Batch size: {BATCH_SIZE}")
-print(f"Grad accumulation: {GRADIENT_ACCUMULATION_STEPS}")
-print(f"Effective batch: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
-print(f"Total steps: {total_steps}")
-print(f"Warmup: {warmup_steps} steps")
+print(f"Grad accumulation steps: {GRADIENT_ACCUMULATION_STEPS}")
+print(f"Effective batch size: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
+print(f"Batches per epoch: {num_batches_per_epoch}")
+print(f"Update steps per epoch: {num_update_steps_per_epoch}")
+print(f"Total optimization steps: {total_optimization_steps}")
+print(f"Warmup steps: {warmup_steps}")
 print(f"Device: {device}")
 print("="*50 + "\n")
 
 print("--- Starting Training ---\n")
 model_wrapper.train()
 global_step = 0
-accumulation_counter = 0
 
 for epoch in range(NUM_EPOCHS):
-    epoch_loss = 0
+    epoch_loss = 0.0
+    num_loss_accumulated = 0 
+    accumulation_counter = 0
+    
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS}")
     
     for batch_idx, batch in enumerate(progress_bar):
@@ -256,46 +260,87 @@ for epoch in range(NUM_EPOCHS):
         
         loss = loss / GRADIENT_ACCUMULATION_STEPS
         loss.backward()
+        
         accumulation_counter += 1
         
         current_loss_val = loss.item() * GRADIENT_ACCUMULATION_STEPS
+        
         epoch_loss += current_loss_val
-
-        if accumulation_counter % GRADIENT_ACCUMULATION_STEPS == 0 or (batch_idx == len(dataloader) - 1):
+        num_loss_accumulated += 1
+        
+        is_accumulation_step = (accumulation_counter % GRADIENT_ACCUMULATION_STEPS == 0)
+        is_last_batch = (batch_idx == len(dataloader) - 1)
+        
+        if is_accumulation_step or is_last_batch:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 filter(lambda p: p.requires_grad, model_wrapper.parameters()),
                 MAX_GRAD_NORM
             )
+            
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+            
             global_step += 1
             
             wandb.log({
                 "train_loss": current_loss_val,
                 "learning_rate": scheduler.get_last_lr()[0],
-                "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm, 
+                "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                "epoch": epoch + 1,
                 "step": global_step
             })
+                        
             progress_bar.set_postfix({
                 'loss': f'{current_loss_val:.4f}',
-                'gnorm': f'{grad_norm:.2f}' 
+                'lr': f'{scheduler.get_last_lr()[0]:.2e}',
+                'gnorm': f'{grad_norm:.2f}' if isinstance(grad_norm, torch.Tensor) else f'{grad_norm:.2f}'
             })
+            
             if global_step % SAVE_STEPS == 0:
-                save_checkpoint(model_wrapper, tokenizer, OUTPUT_DIR, f"checkpoint-{global_step}", push=PUSH_TO_HUB)
-                
-                torch.cuda.empty_cache() 
+                save_checkpoint(
+                    model_wrapper, 
+                    tokenizer, 
+                    OUTPUT_DIR, 
+                    f"checkpoint-{global_step}", 
+                    push=PUSH_TO_HUB
+                )
+                torch.cuda.empty_cache()
 
         del input_ids, attention_mask, pos_embs, neg_embs, anchor_embs, loss
         
-    avg_loss = epoch_loss / len(dataloader)
-    print(f"\n✓ Epoch {epoch + 1} Avg Loss: {avg_loss:.4f}\n")
-    save_checkpoint(model_wrapper, tokenizer, OUTPUT_DIR, f"epoch-{epoch+1}", push=PUSH_TO_HUB)
+    avg_epoch_loss = epoch_loss / num_loss_accumulated
+    
+    print(f"\n{'='*50}")
+    print(f"✓ Epoch {epoch + 1}/{NUM_EPOCHS} Complete")
+    print(f"  Average Loss: {avg_epoch_loss:.4f}")
+    print(f"  Batches Processed: {num_loss_accumulated}")
+    print(f"  Optimization Steps: {global_step}")
+    print(f"{'='*50}\n")
+    
+    save_checkpoint(
+        model_wrapper, 
+        tokenizer, 
+        OUTPUT_DIR, 
+        f"epoch-{epoch+1}", 
+        push=PUSH_TO_HUB
+    )
     
     gc.collect()
     torch.cuda.empty_cache()
 
 print("\n" + "="*50)
 print("✓ Training Finished!")
+print(f"  Total Epochs: {NUM_EPOCHS}")
+print(f"  Total Optimization Steps: {global_step}")
 print("="*50)
+
+save_checkpoint(
+    model_wrapper, 
+    tokenizer, 
+    OUTPUT_DIR, 
+    "final_model", 
+    push=PUSH_TO_HUB
+)
+
 wandb.finish()

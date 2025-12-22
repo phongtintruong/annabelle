@@ -23,7 +23,7 @@ WANDB_PROJECT = "qwen-embedding-finetune"
 HF_TOKEN = os.getenv("HF_TOKEN")
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 
-HF_REPO_ID = "Ryuk00/qwen-llm-finetuned-v4"
+HF_REPO_ID = "Ryuk00/qwen-llm-finetuned-v5"
 PUSH_TO_HUB = True
 
 GRADIENT_ACCUMULATION_STEPS = 16
@@ -36,6 +36,7 @@ SUBFOLDER = "epoch-3"
 # --- DATASET PUSH ---
 DATASET_INPUT_FILE = "/workspace/bell_llm/dataset/train_dataset.parquet"
 DATASET_REPO_ID = "Ryuk00/annabelle"
+CORPUS_REPO_ID = "Ryuk00/annabelle-response"
 SHARDED_DATA_DIR = "./sharded_data"
 CHUNK_SIZE_MB = 2000
 
